@@ -5,12 +5,11 @@ import (
 	"fmt"
 	//"github.com/rainycape/magick"
 	"image"
-	"image/color"
 	_ "image/jpeg"
 	_ "image/png"
 	"log"
 	"os"
-	_ "sort"
+	"sort"
 )
 
 type Hash string
@@ -19,7 +18,18 @@ type Image struct {
 	i      image.Image
 	Width  int
 	Height int
-	Pixels []color.Color
+	Pixels []color
+}
+
+type color struct {
+	R int
+	G int
+	B int
+	A int
+}
+
+func (col *color) RGBA() (r, g, b, a int) {
+	return col.R, col.G, col.B, col.A
 }
 
 func (h1 Hash) HammingDistance(h2 Hash) int {
@@ -50,16 +60,6 @@ func bitsToHexhash(bits []int) Hash {
 		buf.WriteString(fmt.Sprintf("%1x", tmp))
 	}
 
-	//for i := 0; i < len(bits)/32; i++ {
-	//	tmp := uint32(0)
-	//	for j := 0; j < 32; j++ {
-	//		b := i*32 + j
-	//		tmp = tmp | (uint32(bits[b]) << uint32(31) >> uint32(j))
-	//	}
-
-	//	buf.WriteString(fmt.Sprintf("%4x", tmp))
-	//}
-
 	s := buf.String()
 	var h Hash
 	h = Hash(s)
@@ -69,16 +69,19 @@ func bitsToHexhash(bits []int) Hash {
 func (img *Image) totalValue(x, y int) int {
 	pixel := img.Pixels[y*img.Width+x]
 	r, g, b, a := pixel.RGBA()
-	if img.i.ColorModel() == color.NRGBAModel && a == 0 {
+	//fmt.Printf("(%d, %d, %d)\n", r, g, b)
+
+	if a == 0 {
 		return 765
-	} else {
-		return (int(r) + int(g) + int(b))
 	}
+
+	return int(r) + int(g) + int(b)
 
 }
 
 func median(blocks []int) int {
-	//sort.Ints(blocks)
+	sort.Ints(blocks)
+	fmt.Println(blocks)
 	length := len(blocks)
 
 	if length%2 == 0 {
@@ -91,9 +94,9 @@ func median(blocks []int) int {
 func abs(i int) int {
 	if i < 0 {
 		return -i
-	} else {
-		return i
 	}
+
+	return i
 }
 
 func blocksToBits(blocks []int, pixels_per_block int) []int {
@@ -101,9 +104,11 @@ func blocksToBits(blocks []int, pixels_per_block int) []int {
 	bandsize := len(blocks) / 4
 
 	for i := 0; i < 4; i++ {
-		fmt.Println(blocks[i*bandsize : (i+1)*bandsize])
-
-		m := median(blocks[i*bandsize : (i+1)*bandsize])
+		//fmt.Println(blocks[i*bandsize : (i+1)*bandsize])
+		mblocks := make([]int, ((i+1)*bandsize)-(i*bandsize))
+		copy(mblocks, blocks[i*bandsize:(i+1)*bandsize])
+		m := median(mblocks)
+		fmt.Println(m)
 
 		for j := i * bandsize; j < (i+1)*bandsize; j++ {
 
@@ -130,7 +135,7 @@ func (img *Image) blockhashEven(bits int) Hash {
 	var result []int
 	for y := 0; y < bits; y++ {
 		for x := 0; x < bits; x++ {
-			value := int(0)
+			value := 0
 
 			for iy := 0; iy < blocksize_y; iy++ {
 				for ix := 0; ix < blocksize_x; ix++ {
@@ -142,6 +147,7 @@ func (img *Image) blockhashEven(bits int) Hash {
 			result = append(result, value)
 		}
 	}
+	fmt.Println(result)
 
 	res := blocksToBits(result, blocksize_x*blocksize_y)
 	return bitsToHexhash(res)
@@ -159,14 +165,16 @@ func (img *Image) Blockhash(bits int) Hash {
 	}
 }
 
-func createPixelArray(img image.Image) []color.Color {
+func createPixelArray(img image.Image) []color {
 	bounds := img.Bounds()
 	min := bounds.Min
 	max := bounds.Max
-	pixels := make([]color.Color, (max.X-min.X)*(max.Y-min.Y))
+	pixels := make([]color, (max.X-min.X)*(max.Y-min.Y))
 	for x := min.X; x < max.X; x++ {
 		for y := min.Y; y < max.Y; y++ {
-			pixels[y+(x*(max.Y-min.Y))] = img.At(x, y)
+			r, g, b, a := img.At(x, y).RGBA()
+			pixel := color{R: int(r / 256), G: int(g / 256), B: int(b / 256), A: int(a / 256)}
+			pixels[x+(y*(max.X-min.X))] = pixel
 		}
 	}
 	return pixels
