@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"fmt"
-	//"github.com/rainycape/magick"
 	"image"
+	_ "image/color"
 	_ "image/jpeg"
 	_ "image/png"
 	"log"
@@ -22,13 +22,13 @@ type Image struct {
 }
 
 type color struct {
-	R int
-	G int
-	B int
-	A int
+	R uint8
+	G uint8
+	B uint8
+	A uint8
 }
 
-func (col *color) RGBA() (r, g, b, a int) {
+func (col *color) RGBA() (r, g, b, a uint8) {
 	return col.R, col.G, col.B, col.A
 }
 
@@ -47,7 +47,6 @@ func bitsToHexhash(bits []int) Hash {
 	for _, v := range bits {
 		bu.WriteString(fmt.Sprintf("%d", v))
 	}
-	fmt.Println(bu.String())
 
 	var buf bytes.Buffer
 	for i := 0; i < len(bits)/4; i++ {
@@ -61,15 +60,14 @@ func bitsToHexhash(bits []int) Hash {
 	}
 
 	s := buf.String()
-	var h Hash
-	h = Hash(s)
+	h := Hash(s)
 	return h
 }
 
 func (img *Image) totalValue(x, y int) int {
 	pixel := img.Pixels[y*img.Width+x]
 	r, g, b, a := pixel.RGBA()
-	//fmt.Printf("(%d, %d, %d)\n", r, g, b)
+	//fmt.Println(r, g, b)
 
 	if a == 0 {
 		return 765
@@ -81,7 +79,6 @@ func (img *Image) totalValue(x, y int) int {
 
 func median(blocks []int) int {
 	sort.Ints(blocks)
-	fmt.Println(blocks)
 	length := len(blocks)
 
 	if length%2 == 0 {
@@ -104,25 +101,22 @@ func blocksToBits(blocks []int, pixels_per_block int) []int {
 	bandsize := len(blocks) / 4
 
 	for i := 0; i < 4; i++ {
-		//fmt.Println(blocks[i*bandsize : (i+1)*bandsize])
 		mblocks := make([]int, ((i+1)*bandsize)-(i*bandsize))
 		copy(mblocks, blocks[i*bandsize:(i+1)*bandsize])
 		m := median(mblocks)
-		fmt.Println(m)
 
 		for j := i * bandsize; j < (i+1)*bandsize; j++ {
 
 			v := blocks[j]
+			res := (v > m || ((abs(v-m) < 1) && (m > half_block_value)))
 
-			if v > m {
+			if res == true {
 				blocks[j] = 1
-			} else if abs(v-m) < 1 && m > half_block_value {
-				blocks[j] = 0
 			} else {
 				blocks[j] = 0
 			}
 
-			fmt.Println("J:", j, "V:", v, "M:", m, "res:", blocks[j])
+			//fmt.Println("J:", j, "V:", v, "M:", m, "res:", blocks[j])
 		}
 	}
 	return blocks
@@ -147,22 +141,95 @@ func (img *Image) blockhashEven(bits int) Hash {
 			result = append(result, value)
 		}
 	}
-	fmt.Println(result)
 
 	res := blocksToBits(result, blocksize_x*blocksize_y)
 	return bitsToHexhash(res)
 }
 
-func (img *Image) Blockhash(bits int) Hash {
+func Blockhash(i image.Image, bits int) Hash {
+	img := unpackImage(i)
 
 	even_x := img.Width%bits == 0
 	even_y := img.Height%bits == 0
 
 	if even_x && even_y {
-		return img.blockhashEven(bits)
-	} else {
-		return "examplehash"
+		//return img.blockhashEven(bits)
 	}
+
+	blocks := make([][]int, bits)
+	for x := 0; x < bits; x++ {
+		for y := 0; y < bits; y++ {
+			blocks[x] = make([]int, bits)
+		}
+	}
+
+	block_width := img.Width / bits
+	block_height := img.Height / bits
+	var block_top, block_bottom, block_left, block_right int
+	var weight_top, weight_bottom, weight_left, weight_right int
+
+	for y := 0; y < img.Height; y++ {
+		if even_y {
+			block_top = y / block_height
+			block_bottom = y / block_height
+			weight_top, weight_bottom = 1, 0
+		} else {
+			y_frac := (y + 1) % block_height
+			y_int := (y + 1) % block_height
+
+			weight_top = (1 - y_frac)
+			weight_bottom = y_frac
+
+			if y_int > 0 || (y+1) == img.Height {
+				block_top = y / block_height
+				block_bottom = y / block_height
+			} else {
+				block_top = y / block_height
+				block_bottom = -(-y / block_height)
+			}
+		}
+
+		for x := 0; x < img.Width; x++ {
+			value := img.totalValue(x, y)
+
+			if even_x {
+				block_left = x / block_width
+				block_right = x / block_width
+				weight_left, weight_right = 1, 0
+			} else {
+				x_frac := (x + 1) % block_width
+				x_int := (x + 1) % block_width
+
+				weight_left = (1 - x_frac)
+				weight_right = x_frac
+
+				if x_int > 0 || (x+1) == img.Width {
+					block_left = x / block_width
+					block_right = x / block_width
+				} else {
+					block_left = x / block_width
+					block_right = -(-x / block_width)
+				}
+			}
+
+			blocks[block_top][block_left] += value * weight_top * weight_left
+			blocks[block_top][block_right] += value * weight_top * weight_right
+			blocks[block_bottom][block_left] += value * weight_bottom * weight_left
+			blocks[block_bottom][block_right] += value * weight_bottom * weight_right
+		}
+
+	}
+
+	var result []int
+	for x := 0; x < bits; x++ {
+		for y := 0; y < bits; y++ {
+			result = append(result, blocks[x][y])
+		}
+	}
+
+	res := blocksToBits(result, block_width*block_height)
+
+	return bitsToHexhash(res)
 }
 
 func createPixelArray(img image.Image) []color {
@@ -173,28 +240,21 @@ func createPixelArray(img image.Image) []color {
 	for x := min.X; x < max.X; x++ {
 		for y := min.Y; y < max.Y; y++ {
 			r, g, b, a := img.At(x, y).RGBA()
-			pixel := color{R: int(r / 256), G: int(g / 256), B: int(b / 256), A: int(a / 256)}
+			pixel := color{
+				R: uint8(((r * 0xffff) / a) >> 8),
+				G: uint8(((g * 0xffff) / a) >> 8),
+				B: uint8(((b * 0xffff) / a) >> 8),
+				A: uint8(a),
+			}
 			pixels[x+(y*(max.X-min.X))] = pixel
 		}
 	}
 	return pixels
 }
 
-func openImage(path string) Image {
-	f, err := os.Open(path)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer f.Close()
-
-	img, _, err := image.Decode(f)
-	if err != nil {
-		log.Fatal(err)
-	}
+func unpackImage(img image.Image) Image {
 
 	bounds := img.Bounds()
-	//pixels, _ := img.Pixels(magick.Rect{X: 0, Y: 0, Width: uint(img.Width()), Height: uint(img.Height())})
 	pixels := createPixelArray(img)
 
 	return Image{
@@ -207,8 +267,27 @@ func openImage(path string) Image {
 
 func main() {
 	path := os.Args[1]
-	img := openImage(path)
+
+	f, err := os.Open(path)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+
+	i, _, err := image.Decode(f)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	bits := 16
-	hash := img.Blockhash(bits)
+	hash := Blockhash(i, bits)
 	fmt.Println(hash)
+
+	//path2 := os.Args[2]
+	//img2 := openImage(path2)
+	//hash2 := img2.Blockhash(bits)
+	//fmt.Println(hash2)
+
+	//fmt.Println(hash.HammingDistance(hash2))
 }
