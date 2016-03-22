@@ -4,7 +4,6 @@ A Go port of https://github.com/commonsmachinery/blockhash-python.
 
 ## Usage
 ```bash
-go get
 go build
 ./blockhash path_to_image.jpg
 ```
