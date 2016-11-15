@@ -1,268 +1,161 @@
 package main
 
 import (
-	"bytes"
+	"encoding/hex"
 	"fmt"
 	"image"
-	_ "image/color"
 	_ "image/jpeg"
 	_ "image/png"
 	"log"
+	"math"
 	"os"
 	"sort"
 )
 
 type Hash string
 
-type Image struct {
-	i      image.Image
-	Width  int
-	Height int
-	Pixels []color
-}
+func (h1 Hash) Distance(h2 Hash) int {
+	h1raw, _ := hex.DecodeString(string(h1))
+	h2raw, _ := hex.DecodeString(string(h2))
 
-type color struct {
-	R uint8
-	G uint8
-	B uint8
-	A uint8
-}
-
-func (col *color) RGBA() (r, g, b, a uint8) {
-	return col.R, col.G, col.B, col.A
-}
-
-func (h1 Hash) HammingDistance(h2 Hash) int {
 	diffs := 0
-	for i, _ := range h1 {
-		if h1[i] != h2[i] {
-			diffs += 1
+	for i, _ := range h1raw {
+		// Naive popcount
+		d := h1raw[i] ^ h2raw[i]
+		for d > 0 {
+			if d&1 == 1 {
+				diffs++
+			}
+			d >>= 1
 		}
 	}
 	return diffs
 }
 
 func bitsToHexhash(bits []int) Hash {
-	var bu bytes.Buffer
-	for _, v := range bits {
-		bu.WriteString(fmt.Sprintf("%d", v))
-	}
+	re := make([]byte, len(bits)/8)
 
-	var buf bytes.Buffer
-	for i := 0; i < len(bits)/4; i++ {
-		tmp := uint(0)
-		for j := 0; j < 4; j++ {
-			b := i*4 + j
-			tmp = tmp | (uint(bits[b]) << uint(3) >> uint(j))
+	for i := 0; i < len(re); i++ {
+		for j := 0; j < 8; j++ {
+			re[i] |= byte(bits[i*8+j]&1) << uint(7-j)
 		}
-
-		buf.WriteString(fmt.Sprintf("%1x", tmp))
 	}
 
-	s := buf.String()
-	h := Hash(s)
-	return h
+	return Hash(hex.EncodeToString(re))
 }
 
-func (img *Image) totalValue(x, y int) int {
-	pixel := img.Pixels[y*img.Width+x]
-	r, g, b, a := pixel.RGBA()
-	//fmt.Println(r, g, b)
+func totalValue(img *image.NRGBA, x, y int) int {
+	offset := img.PixOffset(x, y)
 
-	if a == 0 {
+	if img.Pix[offset+3] == 0 {
 		return 765
 	}
 
-	return int(r) + int(g) + int(b)
-
+	return int(img.Pix[offset]) +
+		int(img.Pix[offset+1]) +
+		int(img.Pix[offset+2])
 }
 
-func median(blocks []int) int {
-	sort.Ints(blocks)
-	length := len(blocks)
+func medianf(blocks []float64) float64 {
+	// Copy blocks
+	sorted := make([]float64, len(blocks))
+	copy(sorted, blocks)
+	sort.Float64s(sorted)
+	length := len(sorted)
 
 	if length%2 == 0 {
-		return (blocks[length/2] + blocks[length/(2+1)]) / 2
+		return (sorted[length/2] + sorted[length/2+1]) / 2
 	}
 
-	return blocks[length/2]
+	return sorted[length/2]
 }
 
-func abs(i int) int {
-	if i < 0 {
-		return -i
-	}
-
-	return i
-}
-
-func blocksToBits(blocks []int, pixels_per_block int) []int {
-	half_block_value := pixels_per_block * 256 * 3 / 2
-	bandsize := len(blocks) / 4
+func blocksToBitsf(blocks []float64, nblocks, pixels_per_block int) (result []int) {
+	half_block_value := float64(pixels_per_block * 256 * 3 / 2)
+	bandsize := nblocks / 4
+	result = make([]int, nblocks)
 
 	for i := 0; i < 4; i++ {
-		mblocks := make([]int, ((i+1)*bandsize)-(i*bandsize))
-		copy(mblocks, blocks[i*bandsize:(i+1)*bandsize])
-		m := median(mblocks)
-
+		m := medianf(blocks[i*bandsize : (i+1)*bandsize])
 		for j := i * bandsize; j < (i+1)*bandsize; j++ {
-
-			v := blocks[j]
-			res := (v > m || ((abs(v-m) < 1) && (m > half_block_value)))
-
-			if res == true {
-				blocks[j] = 1
+			if (blocks[j] > m) || (math.Abs(blocks[j]-m) < 1 && m > half_block_value) {
+				result[j] = 1
 			} else {
-				blocks[j] = 0
+				result[j] = 0
 			}
-
-			//fmt.Println("J:", j, "V:", v, "M:", m, "res:", blocks[j])
-		}
-	}
-	return blocks
-}
-
-func (img *Image) blockhashEven(bits int) Hash {
-	blocksize_x := img.Width / bits
-	blocksize_y := img.Height / bits
-
-	var result []int
-	for y := 0; y < bits; y++ {
-		for x := 0; x < bits; x++ {
-			value := 0
-
-			for iy := 0; iy < blocksize_y; iy++ {
-				for ix := 0; ix < blocksize_x; ix++ {
-					cx := x*blocksize_x + ix
-					cy := y*blocksize_y + iy
-					value += img.totalValue(cx, cy)
-				}
-			}
-			result = append(result, value)
 		}
 	}
 
-	res := blocksToBits(result, blocksize_x*blocksize_y)
-	return bitsToHexhash(res)
+
+	return
 }
 
 func Blockhash(i image.Image, bits int) Hash {
 	img := unpackImage(i)
-
-	even_x := img.Width%bits == 0
-	even_y := img.Height%bits == 0
-
-	if even_x && even_y {
-		//return img.blockhashEven(bits)
-	}
-
-	blocks := make([][]int, bits)
-	for x := 0; x < bits; x++ {
-		for y := 0; y < bits; y++ {
-			blocks[x] = make([]int, bits)
-		}
-	}
-
-	block_width := img.Width / bits
-	block_height := img.Height / bits
+	blocks := make([]float64, bits*bits)
+	bounds := img.Bounds()
+	block_width := float64(bounds.Dx()) / float64(bits)
+	block_height := float64(bounds.Dy()) / float64(bits)
 	var block_top, block_bottom, block_left, block_right int
-	var weight_top, weight_bottom, weight_left, weight_right int
+	var weight_top, weight_bottom, weight_left, weight_right float64
 
-	for y := 0; y < img.Height; y++ {
-		if even_y {
-			block_top = y / block_height
-			block_bottom = y / block_height
-			weight_top, weight_bottom = 1, 0
+	for y := 0; y < bounds.Dy(); y++ {
+		y_mod := math.Mod(float64(y+1), block_height)
+		y_int, y_frac := math.Modf(y_mod)
+
+		weight_top = (1 - y_frac)
+		weight_bottom = y_frac
+
+		// y_int will be 0 on bottom/right borders and on block boundaries
+		if y_int > 0 || (y+1) == bounds.Dy() {
+			block_top = int(math.Floor(float64(y) / block_height))
+			block_bottom = block_top
 		} else {
-			y_frac := (y + 1) % block_height
-			y_int := (y + 1) % block_height
-
-			weight_top = (1 - y_frac)
-			weight_bottom = y_frac
-
-			if y_int > 0 || (y+1) == img.Height {
-				block_top = y / block_height
-				block_bottom = y / block_height
-			} else {
-				block_top = y / block_height
-				block_bottom = -(-y / block_height)
-			}
+			block_top = int(math.Floor(float64(y) / block_height))
+			block_bottom = int(math.Ceil(float64(y) / block_height))
 		}
 
-		for x := 0; x < img.Width; x++ {
-			value := img.totalValue(x, y)
+		for x := 0; x < bounds.Dx(); x++ {
+			value := float64(totalValue(img, x, y))
 
-			if even_x {
-				block_left = x / block_width
-				block_right = x / block_width
-				weight_left, weight_right = 1, 0
+			x_mod := math.Mod(float64(x+1), block_width)
+			x_int, x_frac := math.Modf(x_mod)
+
+			weight_left = (1 - x_frac)
+			weight_right = x_frac
+
+			if x_int > 0 || (x+1) == bounds.Dx() {
+				block_left = int(math.Floor(float64(x) / block_width))
+				block_right = block_left
 			} else {
-				x_frac := (x + 1) % block_width
-				x_int := (x + 1) % block_width
-
-				weight_left = (1 - x_frac)
-				weight_right = x_frac
-
-				if x_int > 0 || (x+1) == img.Width {
-					block_left = x / block_width
-					block_right = x / block_width
-				} else {
-					block_left = x / block_width
-					block_right = -(-x / block_width)
-				}
+				block_left = int(math.Floor(float64(x) / block_width))
+				block_right = int(math.Ceil(float64(x) / block_width))
 			}
 
-			blocks[block_top][block_left] += value * weight_top * weight_left
-			blocks[block_top][block_right] += value * weight_top * weight_right
-			blocks[block_bottom][block_left] += value * weight_bottom * weight_left
-			blocks[block_bottom][block_right] += value * weight_bottom * weight_right
-		}
 
-	}
-
-	var result []int
-	for x := 0; x < bits; x++ {
-		for y := 0; y < bits; y++ {
-			result = append(result, blocks[x][y])
+			blocks[block_top*bits+block_left] += value * weight_top * weight_left
+			blocks[block_top*bits+block_right] += value * weight_top * weight_right
+			blocks[block_bottom*bits+block_left] += value * weight_bottom * weight_left
+			blocks[block_bottom*bits+block_right] += value * weight_bottom * weight_right
 		}
 	}
 
-	res := blocksToBits(result, block_width*block_height)
-
+	// XXX is truncate correct? that's what C code is doing
+	res := blocksToBitsf(blocks, bits*bits, int(block_width*block_height))
 	return bitsToHexhash(res)
 }
 
-func createPixelArray(img image.Image) []color {
+func unpackImage(img image.Image) *image.NRGBA {
 	bounds := img.Bounds()
-	min := bounds.Min
-	max := bounds.Max
-	pixels := make([]color, (max.X-min.X)*(max.Y-min.Y))
-	for x := min.X; x < max.X; x++ {
-		for y := min.Y; y < max.Y; y++ {
-			r, g, b, a := img.At(x, y).RGBA()
-			pixel := color{
-				R: uint8(((r * 0xffff) / a) >> 8),
-				G: uint8(((g * 0xffff) / a) >> 8),
-				B: uint8(((b * 0xffff) / a) >> 8),
-				A: uint8(a),
-			}
-			pixels[x+(y*(max.X-min.X))] = pixel
+	re := image.NewNRGBA(image.Rectangle{image.Pt(0, 0), bounds.Size()})
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			re.Set(x-bounds.Min.X, y-bounds.Min.Y, img.At(x, y))
 		}
 	}
-	return pixels
-}
 
-func unpackImage(img image.Image) Image {
-
-	bounds := img.Bounds()
-	pixels := createPixelArray(img)
-
-	return Image{
-		i:      img,
-		Width:  bounds.Max.X - bounds.Min.X,
-		Height: bounds.Max.Y - bounds.Min.Y,
-		Pixels: pixels,
-	}
+	return re
 }
 
 func main() {
